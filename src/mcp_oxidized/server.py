@@ -5,6 +5,7 @@ Transport: Streamable HTTP (default port 8000).
 
 import logging
 import os
+from typing import Optional
 
 from fastmcp import FastMCP
 from mcp_oxidized.diff_utils import blame_annotate, inline_diff, unified_diff
@@ -16,12 +17,113 @@ mcp = FastMCP(
     name="mcp-oxidized",
     instructions=(
         "You have access to an Oxidized network configuration backup server. "
-        "Use the available tools to list devices, inspect configurations, "
-        "compare versions and analyse changes over time."
+        "Use the available tools to list devices, look up devices by exact or "
+        "partial name, inspect configurations, compare versions and analyse "
+        "changes over time."
     ),
 )
 
 client = OxidizedClient()
+
+
+class DeviceResolutionError(ValueError):
+    """Raised when a device query has no unique Oxidized node match."""
+
+
+def _node_group(node: dict) -> str:
+    return str(node.get("group") or "default")
+
+
+def _node_name(node: dict) -> str:
+    return str(node.get("name") or node.get("full_name") or "")
+
+
+def _node_full_name(node: dict) -> str:
+    full_name = node.get("full_name")
+    if full_name:
+        return str(full_name)
+    name = _node_name(node)
+    group = _node_group(node)
+    return f"{group}/{name}" if group and group != "default" else name
+
+
+def _node_match_fields(node: dict) -> list[str]:
+    """Return searchable fields for an Oxidized node."""
+    fields = {
+        _node_name(node),
+        _node_full_name(node),
+        str(node.get("ip") or ""),
+    }
+    return [field.casefold() for field in fields if field]
+
+
+def _format_node(node: dict) -> str:
+    return (
+        f"name={_node_name(node)} "
+        f"full_name={_node_full_name(node)} "
+        f"group={_node_group(node)} "
+        f"ip={node.get('ip', '')}"
+    )
+
+
+def _find_device_matches(query: str, group: Optional[str] = None) -> list[dict]:
+    """Find exact or partial matches without calling an Oxidized node route."""
+    query_normalized = query.strip().casefold()
+    if not query_normalized:
+        return []
+
+    nodes = client.get_nodes()
+    filtered = nodes
+    if group:
+        group_normalized = group.strip().casefold()
+        filtered = [
+            node
+            for node in nodes
+            if _node_group(node).casefold() == group_normalized
+        ]
+
+    exact = [
+        node
+        for node in filtered
+        if query_normalized in _node_match_fields(node)
+    ]
+    if exact:
+        return exact
+
+    return [
+        node
+        for node in filtered
+        if any(query_normalized in field for field in _node_match_fields(node))
+    ]
+
+
+def _resolve_device(query: str, group: Optional[str] = None) -> tuple[str, Optional[str], dict]:
+    """Resolve an exact or partial device query to one canonical Oxidized node."""
+    matches = _find_device_matches(query, group)
+
+    if not matches:
+        scope = f" in group '{group}'" if group else ""
+        raise DeviceResolutionError(
+            f"No Oxidized device matches '{query}'{scope}. "
+            "Use find_devices to search by part of the device name."
+        )
+
+    if len(matches) > 1:
+        candidates = "\n".join(f"- {_format_node(node)}" for node in matches[:25])
+        more = f"\n... and {len(matches) - 25} more." if len(matches) > 25 else ""
+        raise DeviceResolutionError(
+            f"'{query}' matches {len(matches)} devices. Please provide a more "
+            f"specific name or group:\n{candidates}{more}"
+        )
+
+    resolved = matches[0]
+    resolved_name = _node_name(resolved)
+    resolved_group = resolved.get("group") or (group or None)
+    if not resolved_name:
+        raise DeviceResolutionError(
+            f"The match for '{query}' has no usable Oxidized device name."
+        )
+    return resolved_name, resolved_group, resolved
 
 
 # ---------------------------------------------------------------------------
@@ -49,26 +151,68 @@ def list_devices() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool: find_devices
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def find_devices(query: str, group: str = "") -> str:
+    """
+    Find Oxidized devices by exact or partial name, full name, or IP address.
+    Matching is case-insensitive. Use this before other device tools when only
+    part of a device name is known.
+
+    Args:
+        query: part of a device name, full device name, full group/name, or IP
+        group: optional Oxidized device group filter
+    """
+    try:
+        matches = _find_device_matches(query, group or None)
+    except Exception as exc:
+        logger.exception(
+            "Oxidized device lookup failed for query=%s group=%s",
+            query,
+            group or None,
+        )
+        return f"Error looking up devices: {exc}"
+
+    if not matches:
+        scope = f" in group '{group}'" if group else ""
+        return f"No devices match '{query}'{scope}."
+
+    lines = [f"# Device matches for '{query}'"]
+    lines.extend(f"- {_format_node(node)}" for node in matches)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Tool: get_device_status
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def get_device_status(node: str) -> str:
+def get_device_status(node: str, group: str = "") -> str:
     """
-    Return status details for a single device.
-    Includes: last backup time, success/failure status, error messages.
+    Return status details for a single device. The node may be an exact name
+    or a unique partial name.
 
     Args:
-        node: device hostname or IP as known to Oxidized
+        node: device hostname, IP, full name, or unique part of the name
+        group: optional Oxidized device group
     """
     try:
-        data = client.get_node(node)
+        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
+        data = client.get_node(resolved_node)
     except Exception as exc:
-        logger.exception("Oxidized status lookup failed for node=%s", node)
-        return f"Error fetching status for {node}: {exc}"
+        logger.exception(
+            "Oxidized status lookup failed for node=%s group=%s",
+            node,
+            group or None,
+        )
+        return f"Error fetching status for '{node}': {exc}"
 
     last = data.get("last", {})
     return (
+        f"resolved_device: {resolved_node}\n"
+        f"resolved_group:  {resolved_group or ''}\n"
         f"name:   {data.get('name','')}\n"
         f"model:  {data.get('model','')}\n"
         f"group:  {data.get('group','')}\n"
@@ -88,28 +232,33 @@ def get_device_status(node: str) -> str:
 def get_device_versions(node: str, group: str = "") -> str:
     """
     Return all available configuration versions for a device.
+    The node may be an exact name or a unique partial name.
     Versions are numbered oldest-first: version 1 is the oldest and the
     highest number is the newest. Each entry includes its timestamp and OID.
 
     Args:
-        node:  device hostname or IP
+        node:  device hostname, full name, or unique part of the name
         group: device group in Oxidized (optional)
     """
     try:
-        versions = client.get_versions(node, group or None)
+        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
+        versions = client.get_versions(resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized version list lookup failed for node=%s group=%s",
             node,
             group or None,
         )
-        return f"Error fetching versions for {node}: {exc}"
+        return f"Error fetching versions for '{node}': {exc}"
 
     if not versions:
-        return f"No versions found for {node}."
+        return f"No versions found for {resolved_node}."
 
     total = len(versions)
-    lines = [f"# Versions for {node} (oldest to newest)"]
+    lines = [
+        f"# Versions for {resolved_node} (oldest to newest)",
+        f"# Requested device: {node}",
+    ]
     for index, version in enumerate(reversed(versions), start=1):
         timestamp = version.get("date") or version.get("time") or ""
         oid = version.get("oid") or version.get("id") or ""
@@ -131,42 +280,45 @@ def get_device_versions(node: str, group: str = "") -> str:
 def get_device_config_with_blame(node: str, group: str = "") -> str:
     """
     Return the current configuration of a device with per-line blame annotation.
-    Each line is prefixed with the version number and date that last introduced it.
-    Useful for questions like: 'show me the current config and who changed each line'.
+    The node may be an exact name or a unique partial name.
 
     Args:
-        node:  device hostname or IP
+        node:  device hostname, full name, or unique part of the name
         group: device group in Oxidized (optional)
     """
     try:
-        config = client.fetch_config(node, group or None)
-        versions = client.get_versions(node, group or None)
+        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
+        config = client.fetch_config(resolved_node, resolved_group)
+        versions = client.get_versions(resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized blame prefetch failed for node=%s group=%s",
             node,
             group or None,
         )
-        return f"Error: {exc}"
+        return f"Error fetching blame for '{node}': {exc}"
 
     enriched = []
     for ver in versions:
         oid = ver.get("oid") or ver.get("id", "")
         try:
-            text = client.fetch_version(node, oid, group or None)
+            text = client.fetch_version(resolved_node, oid, resolved_group)
             ver["_config_lines"] = text.splitlines()
         except Exception:
             logger.exception(
                 "Oxidized historical config fetch failed for node=%s group=%s oid=%s",
-                node,
-                group or None,
+                resolved_node,
+                resolved_group,
                 oid,
             )
             ver["_config_lines"] = None
         enriched.append(ver)
 
     annotated = blame_annotate(config, enriched)
-    return f"# Config with blame annotation for {node}\n\n{annotated}"
+    return (
+        f"# Config with blame annotation for {resolved_node}\n"
+        f"# Requested device: {node}\n\n{annotated}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -182,53 +334,53 @@ def get_config_with_inline_diff(
 ) -> str:
     """
     Return the complete current configuration with inline change markers
-    relative to a reference version number.
-    Changed lines are marked [+] (added/changed) or [-] (removed).
-    Unchanged lines are marked [ ].
-    Useful for: 'show the current config and highlight what changed since version 12'.
+    relative to a reference version number. The node may be an exact name or
+    a unique partial name.
 
     Args:
-        node:          device hostname or IP
+        node:          device hostname, full name, or unique part of the name
         ref_version:   version number to compare against (1 = oldest, higher = newer)
         group:         device group in Oxidized (optional)
         context_lines: if > 0, only show this many unchanged lines around changes
     """
     try:
-        current = client.fetch_config(node, group or None)
-        versions = client.get_versions(node, group or None)
+        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
+        current = client.fetch_config(resolved_node, resolved_group)
+        versions = client.get_versions(resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized inline diff prefetch failed for node=%s group=%s",
             node,
             group or None,
         )
-        return f"Error: {exc}"
+        return f"Error fetching inline diff for '{node}': {exc}"
 
     idx = len(versions) - ref_version
     if idx < 0 or idx >= len(versions):
         return (
-            f"Version {ref_version} does not exist. "
+            f"Version {ref_version} does not exist for {resolved_node}. "
             f"Available versions: 1 to {len(versions)}."
         )
 
     ver = versions[idx]
     oid = ver.get("oid") or ver.get("id", "")
     try:
-        ref_config = client.fetch_version(node, oid, group or None)
+        ref_config = client.fetch_version(resolved_node, oid, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized reference config fetch failed for node=%s group=%s version=%s oid=%s",
-            node,
-            group or None,
+            resolved_node,
+            resolved_group,
             ref_version,
             oid,
         )
-        return f"Error fetching version {ref_version}: {exc}"
+        return f"Error fetching version {ref_version} for '{resolved_node}': {exc}"
 
     result = inline_diff(ref_config, current, context_lines=context_lines)
     ref_date = (ver.get("date") or ver.get("time") or "")[:10]
     return (
-        f"# Inline diff for {node}: current vs version {ref_version} ({ref_date})\n"
+        f"# Inline diff for {resolved_node}: current vs version {ref_version} ({ref_date})\n"
+        f"# Requested device: {node}\n"
         f"# [+] added/changed  [-] removed  [ ] unchanged\n\n"
         f"{result}"
     )
@@ -247,26 +399,26 @@ def get_diff_between_versions(
     context_lines: int = 10,
 ) -> str:
     """
-    Return a unified diff between two historical versions of a device configuration.
-    Context lines before and after each change block are configurable.
-    Useful for questions like: 'show the diff between version 12 and version 14 with 10 lines of context'.
+    Return a unified diff between two historical versions of a device
+    configuration. The node may be an exact name or a unique partial name.
 
     Args:
-        node:          device hostname or IP
+        node:          device hostname, full name, or unique part of the name
         version_a:     first version number (older)
         version_b:     second version number (newer)
         group:         device group in Oxidized (optional)
         context_lines: number of unchanged lines to show around each change block
     """
     try:
-        versions = client.get_versions(node, group or None)
+        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
+        versions = client.get_versions(resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized version list lookup failed for node=%s group=%s",
             node,
             group or None,
         )
-        return f"Error fetching versions: {exc}"
+        return f"Error fetching versions for '{node}': {exc}"
 
     total = len(versions)
 
@@ -278,7 +430,7 @@ def get_diff_between_versions(
             )
         ver = versions[idx]
         oid = ver.get("oid") or ver.get("id", "")
-        text = client.fetch_version(node, oid, group or None)
+        text = client.fetch_version(resolved_node, oid, resolved_group)
         return text, ver.get("date") or ver.get("time") or ""
 
     try:
@@ -289,12 +441,12 @@ def get_diff_between_versions(
     except Exception as exc:
         logger.exception(
             "Oxidized historical diff fetch failed for node=%s group=%s versions=%s,%s",
-            node,
-            group or None,
+            resolved_node,
+            resolved_group,
             version_a,
             version_b,
         )
-        return f"Error fetching config: {exc}"
+        return f"Error fetching config for '{resolved_node}': {exc}"
 
     diff = unified_diff(
         text_a,
@@ -306,12 +458,14 @@ def get_diff_between_versions(
 
     if not diff.strip():
         return (
-            f"No differences between version {version_a} ({date_a[:10]}) "
-            f"and version {version_b} ({date_b[:10]})."
+            f"No differences for {resolved_node} between version {version_a} "
+            f"({date_a[:10]}) and version {version_b} ({date_b[:10]})."
         )
 
     return (
-        f"# Diff for {node}: v{version_a} ({date_a[:10]}) -> v{version_b} ({date_b[:10]})\n"
+        f"# Diff for {resolved_node}: v{version_a} ({date_a[:10]}) -> "
+        f"v{version_b} ({date_b[:10]})\n"
+        f"# Requested device: {node}\n"
         f"# Context lines: {context_lines}\n\n"
         f"{diff}"
     )
