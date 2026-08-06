@@ -119,6 +119,8 @@ def _resolve_device(query: str, group: Optional[str] = None) -> tuple[str, Optio
     resolved = matches[0]
     resolved_name = _node_name(resolved)
     resolved_group = resolved.get("group") or (group or None)
+    if resolved_group and str(resolved_group).casefold() == "default":
+        resolved_group = None
     if not resolved_name:
         raise DeviceResolutionError(
             f"The match for '{query}' has no usable Oxidized device name."
