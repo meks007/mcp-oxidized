@@ -1,0 +1,13 @@
+services:
+  mcp-oxidized:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      OXIDIZED_URL: ${OXIDIZED_URL}
+      OXIDIZED_USER: ${OXIDIZED_USER}
+      OXIDIZED_PASS: ${OXIDIZED_PASS}
+      MCP_PORT: "8000"
+    env_file:
+      - .env
