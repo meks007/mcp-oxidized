@@ -81,6 +81,49 @@ def get_device_status(node: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool: get_device_versions
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_device_versions(node: str, group: str = "") -> str:
+    """
+    Return all available configuration versions for a device.
+    Versions are numbered oldest-first: version 1 is the oldest and the
+    highest number is the newest. Each entry includes its timestamp and OID.
+
+    Args:
+        node:  device hostname or IP
+        group: device group in Oxidized (optional)
+    """
+    try:
+        versions = client.get_versions(node, group or None)
+    except Exception as exc:
+        logger.exception(
+            "Oxidized version list lookup failed for node=%s group=%s",
+            node,
+            group or None,
+        )
+        return f"Error fetching versions for {node}: {exc}"
+
+    if not versions:
+        return f"No versions found for {node}."
+
+    total = len(versions)
+    lines = [f"# Versions for {node} (oldest to newest)"]
+    for index, version in enumerate(reversed(versions), start=1):
+        timestamp = version.get("date") or version.get("time") or ""
+        oid = version.get("oid") or version.get("id") or ""
+        message = version.get("message") or version.get("msg") or ""
+        line = f"version={index} time={timestamp} oid={oid}"
+        if message:
+            line += f" message={message}"
+        lines.append(line)
+
+    lines.append(f"total={total}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Tool: get_device_config_with_blame
 # ---------------------------------------------------------------------------
 
@@ -206,7 +249,7 @@ def get_diff_between_versions(
     """
     Return a unified diff between two historical versions of a device configuration.
     Context lines before and after each change block are configurable.
-    Useful for: 'show the diff between version 12 and version 14 with 10 lines of context'.
+    Useful for questions like: 'show the diff between version 12 and version 14 with 10 lines of context'.
 
     Args:
         node:          device hostname or IP
