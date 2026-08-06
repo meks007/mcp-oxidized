@@ -11,9 +11,11 @@ class OxidizedClient:
         user = os.environ.get("OXIDIZED_USER", "")
         password = os.environ.get("OXIDIZED_PASS", "")
         auth = (user, password) if user else None
+        verify_ssl = os.environ.get("OXIDIZED_VERIFY_SSL", "true").lower() not in ("false", "0", "no")
         self._client = httpx.Client(
             base_url=self.base_url,
             auth=auth,
+            verify=verify_ssl,
             timeout=30,
             headers={"Accept": "application/json"},
         )
