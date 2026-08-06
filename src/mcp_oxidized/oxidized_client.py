@@ -1,6 +1,8 @@
 import os
-import httpx
 from typing import Optional
+from urllib.parse import quote
+
+import httpx
 
 
 class OxidizedClient:
@@ -28,33 +30,40 @@ class OxidizedClient:
 
     def get_node(self, node: str) -> dict:
         """Return details for a single node."""
-        resp = self._client.get(f"/node/show/{node}.json")
+        resp = self._client.get(f"/node/show/{quote(node, safe='')}.json")
         resp.raise_for_status()
         return resp.json()
 
     def fetch_config(self, node: str, group: Optional[str] = None) -> str:
         """Return the current running configuration for a node as plain text."""
-        url = f"/node/fetch/{node}"
+        encoded_node = quote(node, safe="")
+        url = f"/node/fetch/{encoded_node}"
         if group:
-            url = f"/node/fetch/{group}/{node}"
+            url = f"/node/fetch/{quote(group, safe='')}/{encoded_node}"
         resp = self._client.get(url, headers={"Accept": "text/plain"})
         resp.raise_for_status()
         return resp.text
 
     def get_versions(self, node: str, group: Optional[str] = None) -> list:
-        """Return version history (commits) for a node."""
-        url = f"/node/version/{node}.json"
-        if group:
-            url = f"/node/version/{group}/{node}.json"
-        resp = self._client.get(url)
+        """Return version history (commits) for a node.
+
+        Oxidized Web expects the node, including its optional group, in the
+        ``node_full`` query parameter of ``/node/version.json``.
+        """
+        node_full = f"{group}/{node}" if group else node
+        resp = self._client.get(
+            "/node/version.json",
+            params={"node_full": node_full},
+        )
         resp.raise_for_status()
         return resp.json()
 
     def fetch_version(self, node: str, oid: str, group: Optional[str] = None) -> str:
         """Return the configuration at a specific git commit OID as plain text."""
-        url = f"/node/fetch/{node}"
+        encoded_node = quote(node, safe="")
+        url = f"/node/fetch/{encoded_node}"
         if group:
-            url = f"/node/fetch/{group}/{node}"
+            url = f"/node/fetch/{quote(group, safe='')}/{encoded_node}"
         resp = self._client.get(url, params={"oid": oid}, headers={"Accept": "text/plain"})
         resp.raise_for_status()
         return resp.text
