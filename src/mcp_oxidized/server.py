@@ -3,10 +3,14 @@ MCP server for Oxidized - network device configuration backup.
 Transport: Streamable HTTP (default port 8000).
 """
 
+import logging
 import os
+
 from fastmcp import FastMCP
+from mcp_oxidized.diff_utils import blame_annotate, inline_diff, unified_diff
 from mcp_oxidized.oxidized_client import OxidizedClient
-from mcp_oxidized.diff_utils import unified_diff, inline_diff, blame_annotate
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     name="mcp-oxidized",
@@ -60,6 +64,7 @@ def get_device_status(node: str) -> str:
     try:
         data = client.get_node(node)
     except Exception as exc:
+        logger.exception("Oxidized status lookup failed for node=%s", node)
         return f"Error fetching status for {node}: {exc}"
 
     last = data.get("last", {})
@@ -94,6 +99,11 @@ def get_device_config_with_blame(node: str, group: str = "") -> str:
         config = client.fetch_config(node, group or None)
         versions = client.get_versions(node, group or None)
     except Exception as exc:
+        logger.exception(
+            "Oxidized blame prefetch failed for node=%s group=%s",
+            node,
+            group or None,
+        )
         return f"Error: {exc}"
 
     enriched = []
@@ -103,6 +113,12 @@ def get_device_config_with_blame(node: str, group: str = "") -> str:
             text = client.fetch_version(node, oid, group or None)
             ver["_config_lines"] = text.splitlines()
         except Exception:
+            logger.exception(
+                "Oxidized historical config fetch failed for node=%s group=%s oid=%s",
+                node,
+                group or None,
+                oid,
+            )
             ver["_config_lines"] = None
         enriched.append(ver)
 
@@ -138,6 +154,11 @@ def get_config_with_inline_diff(
         current = client.fetch_config(node, group or None)
         versions = client.get_versions(node, group or None)
     except Exception as exc:
+        logger.exception(
+            "Oxidized inline diff prefetch failed for node=%s group=%s",
+            node,
+            group or None,
+        )
         return f"Error: {exc}"
 
     idx = ref_version - 1
@@ -152,10 +173,17 @@ def get_config_with_inline_diff(
     try:
         ref_config = client.fetch_version(node, oid, group or None)
     except Exception as exc:
+        logger.exception(
+            "Oxidized reference config fetch failed for node=%s group=%s version=%s oid=%s",
+            node,
+            group or None,
+            ref_version,
+            oid,
+        )
         return f"Error fetching version {ref_version}: {exc}"
 
     result = inline_diff(ref_config, current, context_lines=context_lines)
-    ref_date = ver.get("date", "")[:10]
+    ref_date = (ver.get("date") or ver.get("time") or "")[:10]
     return (
         f"# Inline diff for {node}: current vs version {ref_version} ({ref_date})\n"
         f"# [+] added/changed  [-] removed  [ ] unchanged\n\n"
@@ -190,6 +218,11 @@ def get_diff_between_versions(
     try:
         versions = client.get_versions(node, group or None)
     except Exception as exc:
+        logger.exception(
+            "Oxidized version list lookup failed for node=%s group=%s",
+            node,
+            group or None,
+        )
         return f"Error fetching versions: {exc}"
 
     total = len(versions)
@@ -203,7 +236,7 @@ def get_diff_between_versions(
         ver = versions[idx]
         oid = ver.get("oid") or ver.get("id", "")
         text = client.fetch_version(node, oid, group or None)
-        return text, ver.get("date", "")
+        return text, ver.get("date") or ver.get("time") or ""
 
     try:
         text_a, date_a = fetch_ver(version_a)
@@ -211,6 +244,13 @@ def get_diff_between_versions(
     except ValueError as exc:
         return str(exc)
     except Exception as exc:
+        logger.exception(
+            "Oxidized historical diff fetch failed for node=%s group=%s versions=%s,%s",
+            node,
+            group or None,
+            version_a,
+            version_b,
+        )
         return f"Error fetching config: {exc}"
 
     diff = unified_diff(
@@ -239,5 +279,6 @@ def get_diff_between_versions(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
     port = int(os.environ.get("MCP_PORT", "8000"))
     mcp.run(transport="http", host="0.0.0.0", port=port)
