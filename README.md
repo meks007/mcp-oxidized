@@ -10,11 +10,17 @@ and analyse network device configurations via natural language.
 | Tool | Description |
 |---|---|
 | `list_devices` | List all devices managed by Oxidized |
+| `find_devices` | Find devices by exact or partial name, full name, or IP address |
 | `get_device_status` | Show backup status and last run details for a device |
 | `get_device_versions` | List all stored configuration versions for a device |
 | `get_device_config_with_blame` | Show current config with per-line version annotation |
 | `get_config_with_inline_diff` | Show current config with inline change markers vs a reference version |
 | `get_diff_between_versions` | Unified diff between two historical versions with configurable context lines |
+
+All device-specific tools accept an exact device name or a unique partial name.
+Matching is case-insensitive. If a partial name matches multiple devices, the
+server returns the matching candidates and asks for a more specific name or
+group instead of calling Oxidized with an ambiguous device name.
 
 ## Requirements
 
@@ -58,7 +64,9 @@ Add to your MCP client (e.g. Claude Desktop `mcp.json`):
 ## Example Prompts
 
 - "List all devices and show me which ones failed their last backup."
-- "List all stored versions for HFGBF253-IT in the Firewalls group."
+- "Find the device containing `HFGBF253` in its name."
+- "Show the status of the device matching `253-IT`."
+- "List all stored versions for `HFGBF253-IT` in the `Firewalls` group."
 - "Show me the current config of router01 and annotate each line with the version that last changed it."
 - "Show me the current config of switch02 and highlight all changes compared to version 12."
 - "Show the diff between version 12 and version 14 for firewall01 with 10 lines of context."
