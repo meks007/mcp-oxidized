@@ -204,7 +204,7 @@ def get_config_with_inline_diff(
         )
         return f"Error: {exc}"
 
-    idx = ref_version - 1
+    idx = len(versions) - ref_version
     if idx < 0 or idx >= len(versions):
         return (
             f"Version {ref_version} does not exist. "
@@ -271,7 +271,7 @@ def get_diff_between_versions(
     total = len(versions)
 
     def fetch_ver(num: int):
-        idx = num - 1
+        idx = total - num
         if idx < 0 or idx >= total:
             raise ValueError(
                 f"Version {num} does not exist. Available: 1 to {total}."
