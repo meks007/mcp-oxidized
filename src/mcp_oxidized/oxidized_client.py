@@ -56,15 +56,25 @@ class OxidizedClient:
             params={"node_full": node_full},
         )
         resp.raise_for_status()
-        return resp.json()
+        versions = resp.json()
+
+        # Oxidized Web calls this field ``time``. Keep the client's existing
+        # ``date`` contract so the MCP tools can render version labels.
+        for version in versions:
+            if not version.get("date") and version.get("time"):
+                version["date"] = version["time"]
+        return versions
 
     def fetch_version(self, node: str, oid: str, group: Optional[str] = None) -> str:
         """Return the configuration at a specific git commit OID as plain text."""
-        encoded_node = quote(node, safe="")
-        url = f"/node/fetch/{encoded_node}"
+        params = {"node": node, "oid": oid}
         if group:
-            url = f"/node/fetch/{quote(group, safe='')}/{encoded_node}"
-        resp = self._client.get(url, params={"oid": oid}, headers={"Accept": "text/plain"})
+            params["group"] = group
+        resp = self._client.get(
+            "/node/version/view.text",
+            params=params,
+            headers={"Accept": "text/plain"},
+        )
         resp.raise_for_status()
         return resp.text
 
