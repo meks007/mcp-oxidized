@@ -5,7 +5,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir "mcp[cli]>=1.0.0" httpx hatchling && \
+RUN pip install --no-cache-dir fastmcp httpx hatchling && \
     pip install --no-cache-dir .
 
 ENV OXIDIZED_URL=""
