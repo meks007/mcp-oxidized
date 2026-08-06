@@ -3,7 +3,8 @@ MCP server for Oxidized - network device configuration backup.
 Transport: Streamable HTTP (default port 8000).
 """
 
-from mcp.server.fastmcp import FastMCP
+import os
+from fastmcp import FastMCP
 from mcp_oxidized.oxidized_client import OxidizedClient
 from mcp_oxidized.diff_utils import unified_diff, inline_diff, blame_annotate
 
@@ -95,7 +96,6 @@ def get_device_config_with_blame(node: str, group: str = "") -> str:
     except Exception as exc:
         return f"Error: {exc}"
 
-    # Fetch config text for each version and attach to version dict
     enriched = []
     for ver in versions:
         oid = ver.get("oid") or ver.get("id", "")
@@ -239,6 +239,5 @@ def get_diff_between_versions(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("MCP_PORT", "8000"))
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    mcp.run(transport="http", host="0.0.0.0", port=port)
