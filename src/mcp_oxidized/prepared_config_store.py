@@ -1,4 +1,4 @@
-"""In-memory, session-scoped selections for static config resources."""
+"""In-memory prepared selections keyed by a hashed Bearer token."""
 
 from __future__ import annotations
 
@@ -23,18 +23,18 @@ _prepared: dict[str, dict[PreparedKind, PreparedConfig]] = {}
 
 
 def set_prepared(
-    session_id: str,
+    token_key: str,
     kind: PreparedKind,
     node: str,
     group: str | None,
 ) -> None:
     """Store only a selected node reference, never configuration content."""
     with _lock:
-        slots = _prepared.setdefault(session_id, {})
+        slots = _prepared.setdefault(token_key, {})
         slots[kind] = PreparedConfig(node=node, group=group)
 
 
-def get_prepared(session_id: str, kind: PreparedKind) -> PreparedConfig | None:
-    """Return the selected node reference for this session and resource type."""
+def get_prepared(token_key: str, kind: PreparedKind) -> PreparedConfig | None:
+    """Return the selected node reference for this token and resource type."""
     with _lock:
-        return _prepared.get(session_id, {}).get(kind)
+        return _prepared.get(token_key, {}).get(kind)
