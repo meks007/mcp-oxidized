@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
+
+from fastmcp.server.dependencies import get_http_headers
 
 
 PreparedKind = Literal["content", "blame"]
@@ -22,19 +25,32 @@ _lock = RLock()
 _prepared: dict[str, dict[PreparedKind, PreparedConfig]] = {}
 
 
+def _token_key() -> str:
+    """Return a non-reversible store key for the current Bearer token."""
+    authorization = (get_http_headers() or {}).get("authorization", "").strip()
+    scheme, separator, token = authorization.partition(" ")
+    if scheme.casefold() != "bearer" or not separator or not token.strip():
+        raise RuntimeError(
+            "Missing Bearer token. Send Authorization: Bearer <token> with every request."
+        )
+    return hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+
+
 def set_prepared(
-    token_key: str,
+    _session_id: str,
     kind: PreparedKind,
     node: str,
     group: str | None,
 ) -> None:
     """Store only a selected node reference, never configuration content."""
+    token_key = _token_key()
     with _lock:
         slots = _prepared.setdefault(token_key, {})
         slots[kind] = PreparedConfig(node=node, group=group)
 
 
-def get_prepared(token_key: str, kind: PreparedKind) -> PreparedConfig | None:
-    """Return the selected node reference for this token and resource type."""
+def get_prepared(_session_id: str, kind: PreparedKind) -> PreparedConfig | None:
+    """Return the selected node reference for the current Bearer token and kind."""
+    token_key = _token_key()
     with _lock:
         return _prepared.get(token_key, {}).get(kind)
