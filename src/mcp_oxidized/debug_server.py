@@ -9,6 +9,10 @@ import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from mcp_oxidized.prepared_config_store import (
+    reset_request_authorization,
+    set_request_authorization,
+)
 from mcp_oxidized.server import mcp
 
 
@@ -16,11 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 class RequestAuthDebugMiddleware(BaseHTTPMiddleware):
-    """Log authentication headers for every MCP HTTP request."""
+    """Log and preserve authentication headers for every MCP HTTP request."""
 
     async def dispatch(self, request: Request, call_next):
         authorization = request.headers.get("authorization", "").strip()
         session_id = request.headers.get("mcp-session-id", "")
+        context_token = set_request_authorization(authorization)
 
         logger.info(
             "MCP request auth debug: method=%s path=%s authorization=%r "
@@ -31,7 +36,10 @@ class RequestAuthDebugMiddleware(BaseHTTPMiddleware):
             session_id,
             ",".join(sorted(request.headers.keys())),
         )
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_authorization(context_token)
 
 
 app = mcp.http_app(transport="streamable-http")
