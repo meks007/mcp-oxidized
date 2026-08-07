@@ -5,7 +5,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir fastmcp httpx hatchling && \
+RUN pip install --no-cache-dir fastmcp httpx hatchling uvicorn starlette && \
     pip install --no-cache-dir .
 
 ENV OXIDIZED_URL=""
@@ -15,4 +15,4 @@ ENV MCP_PORT="8000"
 
 EXPOSE 8000
 
-CMD ["python", "-m", "mcp_oxidized.server"]
+CMD ["python", "-m", "mcp_oxidized.debug_server"]
