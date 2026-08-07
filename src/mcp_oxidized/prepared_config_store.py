@@ -14,7 +14,7 @@ from fastmcp.server.dependencies import get_http_headers
 
 logger = logging.getLogger(__name__)
 
-PreparedKind = Literal["content", "blame"]
+PreparedKind = Literal["contents", "blame"]
 
 
 _request_authorization: ContextVar[str] = ContextVar(
@@ -32,7 +32,7 @@ class PreparedConfig:
 
 
 _lock = RLock()
-_prepared: dict[str, dict[PreparedKind, PreparedConfig]] = {}
+_prepared: dict[str, dict[PreparedKind, list[PreparedConfig]]] = {}
 
 
 def set_request_authorization(value: str):
@@ -71,18 +71,28 @@ def _token_key() -> str:
 def set_prepared(
     _session_id: str,
     kind: PreparedKind,
-    node: str,
-    group: str | None,
+    selections: list[PreparedConfig],
 ) -> None:
-    """Store only a selected node reference, never configuration content."""
+    """Store selected node references without configuration content."""
     token_key = _token_key()
+    unique: list[PreparedConfig] = []
+    seen: set[tuple[str, str | None]] = set()
+    for selection in selections:
+        key = (selection.node, selection.group)
+        if key not in seen:
+            seen.add(key)
+            unique.append(selection)
+
     with _lock:
         slots = _prepared.setdefault(token_key, {})
-        slots[kind] = PreparedConfig(node=node, group=group)
+        slots[kind] = unique
 
 
-def get_prepared(_session_id: str, kind: PreparedKind) -> PreparedConfig | None:
-    """Return the selected node reference for the current Bearer token and kind."""
+def get_prepared(
+    _session_id: str,
+    kind: PreparedKind,
+) -> list[PreparedConfig]:
+    """Return selected node references for the current Bearer token and kind."""
     token_key = _token_key()
     with _lock:
-        return _prepared.get(token_key, {}).get(kind)
+        return list(_prepared.get(token_key, {}).get(kind, []))
