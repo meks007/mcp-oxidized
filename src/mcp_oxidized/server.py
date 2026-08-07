@@ -7,9 +7,12 @@ import logging
 import os
 from typing import Optional
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.resources import ResourceContent, ResourceResult
+
 from mcp_oxidized.diff_utils import blame_annotate, inline_diff, unified_diff
 from mcp_oxidized.oxidized_client import OxidizedClient
+from mcp_oxidized.prepared_config_store import get_prepared, set_prepared
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,8 @@ mcp = FastMCP(
         "You have access to an Oxidized network configuration backup server. "
         "Use the available tools to list devices, look up devices by exact or "
         "partial name, inspect configurations, compare versions and analyse "
-        "changes over time."
+        "changes over time. Use prepare_config before reading the current "
+        "configuration resource and prepare_blame before reading the blame resource."
     ),
 )
 
@@ -126,6 +130,32 @@ def _resolve_device(query: str, group: Optional[str] = None) -> tuple[str, Optio
             f"The match for '{query}' has no usable Oxidized device name."
         )
     return resolved_name, resolved_group, resolved
+
+
+def _session_id(ctx: Context) -> str:
+    """Return the current HTTP MCP session id required for prepared resources."""
+    session_id = getattr(ctx, "session_id", None)
+    if callable(session_id):
+        session_id = session_id()
+    if not session_id:
+        raise RuntimeError("No MCP session id is available for this request.")
+    return str(session_id)
+
+
+def _prepared_resource_error(kind: str, prepare_tool: str, resource_uri: str) -> ResourceResult:
+    """Return a readable resource response when no matching prepare call exists."""
+    return ResourceResult(
+        contents=[
+            ResourceContent(
+                uri=resource_uri,
+                content=(
+                    f"No {kind} has been prepared for this session. "
+                    f"Call {prepare_tool} first, then read {resource_uri}."
+                ),
+                mime_type="text/plain; charset=utf-8",
+            )
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,51 +305,215 @@ def get_device_versions(node: str, group: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool: get_device_config_with_blame
+# Tools: prepare_config and prepare_blame
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-def get_device_config_with_blame(node: str, group: str = "") -> str:
-    """
-    Return the current configuration of a device with per-line blame annotation.
-    The node may be an exact name or a unique partial name.
 
-    Args:
-        node:  device hostname, full name, or unique part of the name
-        group: device group in Oxidized (optional)
-    """
+def _prepare_device(
+    node: str,
+    group: str,
+    kind: str,
+    resource_uri: str,
+    ctx: Context,
+) -> str:
+    """Resolve and record a device selection for one static resource."""
     try:
-        resolved_node, resolved_group, _ = _resolve_device(node, group or None)
-        config = client.fetch_config(resolved_node, resolved_group)
-        versions = client.get_versions(resolved_node, resolved_group)
+        resolved_node, resolved_group, data = _resolve_device(node, group or None)
+        session_id = _session_id(ctx)
+        set_prepared(session_id, kind, resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
-            "Oxidized blame prefetch failed for node=%s group=%s",
+            "Oxidized %s preparation failed for node=%s group=%s",
+            kind,
             node,
             group or None,
         )
-        return f"Error fetching blame for '{node}': {exc}"
+        return f"Error preparing {kind} for '{node}': {exc}"
 
-    enriched = []
-    for ver in versions:
-        oid = ver.get("oid") or ver.get("id", "")
-        try:
-            text = client.fetch_version(resolved_node, oid, resolved_group)
-            ver["_config_lines"] = text.splitlines()
-        except Exception:
-            logger.exception(
-                "Oxidized historical config fetch failed for node=%s group=%s oid=%s",
-                resolved_node,
-                resolved_group,
-                oid,
-            )
-            ver["_config_lines"] = None
-        enriched.append(ver)
-
-    annotated = blame_annotate(config, enriched)
+    last = data.get("last") or {}
     return (
-        f"# Config with blame annotation for {resolved_node}\n"
-        f"# Requested device: {node}\n\n{annotated}"
+        f"{kind.capitalize()} prepared.\n"
+        f"requested_device: {node}\n"
+        f"resolved_device: {resolved_node}\n"
+        f"group: {resolved_group or 'default'}\n"
+        f"model: {data.get('model', '')}\n"
+        f"ip: {data.get('ip', '')}\n"
+        f"last_backup_status: {last.get('status', '')}\n\n"
+        f"Read {resource_uri} to retrieve the prepared {kind}."
+    )
+
+
+@mcp.tool()
+def prepare_config(node: str, group: str = "", ctx: Context = None) -> str:
+    """
+    Prepare one device's current configuration for the static get_content resource.
+    The node may be an exact name or a unique partial name. This tool returns only
+    device metadata; read oxidized://config/get_content for the configuration.
+
+    Args:
+        node: device hostname, IP, full name, or unique part of the name
+        group: optional Oxidized device group
+    """
+    if ctx is None:
+        return "Error preparing configuration: MCP request context is unavailable."
+    return _prepare_device(
+        node,
+        group,
+        "configuration",
+        "oxidized://config/get_content",
+        ctx,
+    )
+
+
+@mcp.tool()
+def prepare_blame(node: str, group: str = "", ctx: Context = None) -> str:
+    """
+    Prepare one device's configuration blame for the static get_blame resource.
+    The node may be an exact name or a unique partial name. This tool returns only
+    device metadata; read oxidized://config/get_blame for the annotated config.
+
+    Args:
+        node: device hostname, IP, full name, or unique part of the name
+        group: optional Oxidized device group
+    """
+    if ctx is None:
+        return "Error preparing blame: MCP request context is unavailable."
+    return _prepare_device(
+        node,
+        group,
+        "blame",
+        "oxidized://config/get_blame",
+        ctx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resources: get_content and get_blame
+# ---------------------------------------------------------------------------
+
+@mcp.resource(
+    "oxidized://config/get_content",
+    name="Get prepared current configuration",
+    description=(
+        "Returns the current configuration selected by prepare_config in this MCP "
+        "session. Call prepare_config first. The configuration is fetched live from "
+        "Oxidized for every resource read."
+    ),
+    mime_type="text/plain; charset=utf-8",
+)
+def get_content(ctx: Context) -> ResourceResult:
+    """Fetch the prepared current configuration without storing configuration data."""
+    resource_uri = "oxidized://config/get_content"
+    try:
+        prepared = get_prepared(_session_id(ctx), "content")
+    except Exception as exc:
+        logger.exception("Oxidized content resource could not obtain session id")
+        return ResourceResult(
+            contents=[
+                ResourceContent(
+                    uri=resource_uri,
+                    content=f"Could not read the prepared configuration: {exc}",
+                    mime_type="text/plain; charset=utf-8",
+                )
+            ]
+        )
+
+    if prepared is None:
+        return _prepared_resource_error("configuration", "prepare_config", resource_uri)
+
+    try:
+        content = client.fetch_config(prepared.node, prepared.group)
+    except Exception as exc:
+        logger.exception(
+            "Oxidized configuration download failed for node=%s group=%s",
+            prepared.node,
+            prepared.group,
+        )
+        content = (
+            f"Could not download the current configuration for {prepared.node} "
+            f"in group {prepared.group or 'default'}: {exc}"
+        )
+
+    return ResourceResult(
+        contents=[
+            ResourceContent(
+                uri=resource_uri,
+                content=content,
+                mime_type="text/plain; charset=utf-8",
+            )
+        ]
+    )
+
+
+@mcp.resource(
+    "oxidized://config/get_blame",
+    name="Get prepared configuration blame",
+    description=(
+        "Returns the annotated configuration selected by prepare_blame in this MCP "
+        "session. Call prepare_blame first. The current and historical configurations "
+        "are fetched live from Oxidized for every resource read."
+    ),
+    mime_type="text/plain; charset=utf-8",
+)
+def get_blame(ctx: Context) -> ResourceResult:
+    """Build the prepared configuration blame without storing configuration data."""
+    resource_uri = "oxidized://config/get_blame"
+    try:
+        prepared = get_prepared(_session_id(ctx), "blame")
+    except Exception as exc:
+        logger.exception("Oxidized blame resource could not obtain session id")
+        return ResourceResult(
+            contents=[
+                ResourceContent(
+                    uri=resource_uri,
+                    content=f"Could not read the prepared blame: {exc}",
+                    mime_type="text/plain; charset=utf-8",
+                )
+            ]
+        )
+
+    if prepared is None:
+        return _prepared_resource_error("blame", "prepare_blame", resource_uri)
+
+    try:
+        config = client.fetch_config(prepared.node, prepared.group)
+        versions = client.get_versions(prepared.node, prepared.group)
+        enriched = []
+        for version in versions:
+            oid = version.get("oid") or version.get("id", "")
+            try:
+                text = client.fetch_version(prepared.node, oid, prepared.group)
+                version["_config_lines"] = text.splitlines()
+            except Exception:
+                logger.exception(
+                    "Oxidized historical config fetch failed for node=%s group=%s oid=%s",
+                    prepared.node,
+                    prepared.group,
+                    oid,
+                )
+                version["_config_lines"] = None
+            enriched.append(version)
+
+        content = blame_annotate(config, enriched)
+    except Exception as exc:
+        logger.exception(
+            "Oxidized blame generation failed for node=%s group=%s",
+            prepared.node,
+            prepared.group,
+        )
+        content = (
+            f"Could not generate configuration blame for {prepared.node} "
+            f"in group {prepared.group or 'default'}: {exc}"
+        )
+
+    return ResourceResult(
+        contents=[
+            ResourceContent(
+                uri=resource_uri,
+                content=content,
+                mime_type="text/plain; charset=utf-8",
+            )
+        ]
     )
 
 
