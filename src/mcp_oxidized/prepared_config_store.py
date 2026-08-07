@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
@@ -14,6 +15,12 @@ from fastmcp.server.dependencies import get_http_headers
 logger = logging.getLogger(__name__)
 
 PreparedKind = Literal["content", "blame"]
+
+
+_request_authorization: ContextVar[str] = ContextVar(
+    "request_authorization",
+    default="",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,20 +35,30 @@ _lock = RLock()
 _prepared: dict[str, dict[PreparedKind, PreparedConfig]] = {}
 
 
+def set_request_authorization(value: str):
+    """Set the current request Authorization header from ASGI middleware."""
+    return _request_authorization.set(value)
+
+
+def reset_request_authorization(token) -> None:
+    """Restore the previous request Authorization header value."""
+    _request_authorization.reset(token)
+
+
 def _token_key() -> str:
     """Return a non-reversible store key for the current Bearer token."""
-    headers = get_http_headers() or {}
-    authorization = headers.get("authorization", "").strip()
+    request_authorization = _request_authorization.get().strip()
+    dependency_headers = get_http_headers() or {}
+    dependency_authorization = dependency_headers.get("authorization", "").strip()
+    authorization = request_authorization or dependency_authorization
     scheme, separator, token = authorization.partition(" ")
 
     logger.info(
-        "Prepared selection auth debug: authorization_present=%s scheme=%r "
-        "token_present=%s token_length=%d header_names=%s",
-        bool(authorization),
-        scheme,
-        bool(token.strip()),
-        len(token.strip()),
-        ",".join(sorted(str(name) for name in headers.keys())),
+        "Prepared selection auth debug: middleware_authorization=%r "
+        "dependency_authorization=%r selected_authorization=%r",
+        request_authorization,
+        dependency_authorization,
+        authorization,
     )
 
     if scheme.casefold() != "bearer" or not separator or not token.strip():
