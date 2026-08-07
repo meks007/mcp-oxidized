@@ -142,17 +142,21 @@ def _session_id(ctx: Context) -> str:
     return str(session_id)
 
 
+def _text_content(content: str) -> ResourceContent:
+    """Build resource content without repeating the static resource URI."""
+    return ResourceContent(
+        content=content,
+        mime_type="text/plain; charset=utf-8",
+    )
+
+
 def _prepared_resource_error(kind: str, prepare_tool: str, resource_uri: str) -> ResourceResult:
     """Return a readable resource response when no matching prepare call exists."""
     return ResourceResult(
         contents=[
-            ResourceContent(
-                uri=resource_uri,
-                content=(
-                    f"No {kind} has been prepared for this session. "
-                    f"Call {prepare_tool} first, then read {resource_uri}."
-                ),
-                mime_type="text/plain; charset=utf-8",
+            _text_content(
+                f"No {kind} has been prepared for this session. "
+                f"Call {prepare_tool} first, then read {resource_uri}."
             )
         ]
     )
@@ -312,7 +316,8 @@ def get_device_versions(node: str, group: str = "") -> str:
 def _prepare_device(
     node: str,
     group: str,
-    kind: str,
+    slot: str,
+    label: str,
     resource_uri: str,
     ctx: Context,
 ) -> str:
@@ -320,26 +325,26 @@ def _prepare_device(
     try:
         resolved_node, resolved_group, data = _resolve_device(node, group or None)
         session_id = _session_id(ctx)
-        set_prepared(session_id, kind, resolved_node, resolved_group)
+        set_prepared(session_id, slot, resolved_node, resolved_group)
     except Exception as exc:
         logger.exception(
             "Oxidized %s preparation failed for node=%s group=%s",
-            kind,
+            label,
             node,
             group or None,
         )
-        return f"Error preparing {kind} for '{node}': {exc}"
+        return f"Error preparing {label} for '{node}': {exc}"
 
     last = data.get("last") or {}
     return (
-        f"{kind.capitalize()} prepared.\n"
+        f"{label.capitalize()} prepared.\n"
         f"requested_device: {node}\n"
         f"resolved_device: {resolved_node}\n"
         f"group: {resolved_group or 'default'}\n"
         f"model: {data.get('model', '')}\n"
         f"ip: {data.get('ip', '')}\n"
         f"last_backup_status: {last.get('status', '')}\n\n"
-        f"Read {resource_uri} to retrieve the prepared {kind}."
+        f"Read {resource_uri} to retrieve the prepared {label}."
     )
 
 
@@ -359,6 +364,7 @@ def prepare_config(node: str, group: str = "", ctx: Context = None) -> str:
     return _prepare_device(
         node,
         group,
+        "content",
         "configuration",
         "oxidized://config/get_content",
         ctx,
@@ -381,6 +387,7 @@ def prepare_blame(node: str, group: str = "", ctx: Context = None) -> str:
     return _prepare_device(
         node,
         group,
+        "blame",
         "blame",
         "oxidized://config/get_blame",
         ctx,
@@ -409,13 +416,7 @@ def get_content(ctx: Context) -> ResourceResult:
     except Exception as exc:
         logger.exception("Oxidized content resource could not obtain session id")
         return ResourceResult(
-            contents=[
-                ResourceContent(
-                    uri=resource_uri,
-                    content=f"Could not read the prepared configuration: {exc}",
-                    mime_type="text/plain; charset=utf-8",
-                )
-            ]
+            contents=[_text_content(f"Could not read the prepared configuration: {exc}")]
         )
 
     if prepared is None:
@@ -434,15 +435,7 @@ def get_content(ctx: Context) -> ResourceResult:
             f"in group {prepared.group or 'default'}: {exc}"
         )
 
-    return ResourceResult(
-        contents=[
-            ResourceContent(
-                uri=resource_uri,
-                content=content,
-                mime_type="text/plain; charset=utf-8",
-            )
-        ]
-    )
+    return ResourceResult(contents=[_text_content(content)])
 
 
 @mcp.resource(
@@ -462,15 +455,7 @@ def get_blame(ctx: Context) -> ResourceResult:
         prepared = get_prepared(_session_id(ctx), "blame")
     except Exception as exc:
         logger.exception("Oxidized blame resource could not obtain session id")
-        return ResourceResult(
-            contents=[
-                ResourceContent(
-                    uri=resource_uri,
-                    content=f"Could not read the prepared blame: {exc}",
-                    mime_type="text/plain; charset=utf-8",
-                )
-            ]
-        )
+        return ResourceResult(contents=[_text_content(f"Could not read the prepared blame: {exc}")])
 
     if prepared is None:
         return _prepared_resource_error("blame", "prepare_blame", resource_uri)
@@ -506,15 +491,7 @@ def get_blame(ctx: Context) -> ResourceResult:
             f"in group {prepared.group or 'default'}: {exc}"
         )
 
-    return ResourceResult(
-        contents=[
-            ResourceContent(
-                uri=resource_uri,
-                content=content,
-                mime_type="text/plain; charset=utf-8",
-            )
-        ]
-    )
+    return ResourceResult(contents=[_text_content(content)])
 
 
 # ---------------------------------------------------------------------------
