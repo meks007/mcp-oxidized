@@ -1,4 +1,4 @@
-"""ASGI entry point with safe authentication header diagnostics."""
+"""ASGI entry point with authentication header diagnostics."""
 
 from __future__ import annotations
 
@@ -16,24 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 class RequestAuthDebugMiddleware(BaseHTTPMiddleware):
-    """Log authentication header metadata for every MCP HTTP request."""
+    """Log authentication headers for every MCP HTTP request."""
 
     async def dispatch(self, request: Request, call_next):
         authorization = request.headers.get("authorization", "").strip()
-        scheme, separator, token = authorization.partition(" ")
         session_id = request.headers.get("mcp-session-id", "")
 
         logger.info(
-            "MCP request auth debug: method=%s path=%s authorization_present=%s "
-            "scheme=%r token_present=%s token_length=%d session_id_present=%s "
-            "header_names=%s",
+            "MCP request auth debug: method=%s path=%s authorization=%r "
+            "session_id=%r header_names=%s",
             request.method,
             request.url.path,
-            bool(authorization),
-            scheme,
-            bool(separator and token.strip()),
-            len(token.strip()),
-            bool(session_id),
+            authorization,
+            session_id,
             ",".join(sorted(request.headers.keys())),
         )
         return await call_next(request)
