@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
 
 from fastmcp.server.dependencies import get_http_headers
 
+
+logger = logging.getLogger(__name__)
 
 PreparedKind = Literal["content", "blame"]
 
@@ -27,8 +30,20 @@ _prepared: dict[str, dict[PreparedKind, PreparedConfig]] = {}
 
 def _token_key() -> str:
     """Return a non-reversible store key for the current Bearer token."""
-    authorization = (get_http_headers() or {}).get("authorization", "").strip()
+    headers = get_http_headers() or {}
+    authorization = headers.get("authorization", "").strip()
     scheme, separator, token = authorization.partition(" ")
+
+    logger.info(
+        "Prepared selection auth debug: authorization_present=%s scheme=%r "
+        "token_present=%s token_length=%d header_names=%s",
+        bool(authorization),
+        scheme,
+        bool(token.strip()),
+        len(token.strip()),
+        ",".join(sorted(str(name) for name in headers.keys())),
+    )
+
     if scheme.casefold() != "bearer" or not separator or not token.strip():
         raise RuntimeError(
             "Missing Bearer token. Send Authorization: Bearer <token> with every request."
