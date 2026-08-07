@@ -39,9 +39,20 @@ prepare_blame(node="switch02")
 read oxidized://config/get_blame
 ```
 
-The server stores only the resolved node and group in memory for the current MCP
-session. Current-config and blame selections are separate, so both resources can
-refer to different devices in the same session. Resource reads fetch the current
+The client must send the same Bearer token with both the prepare call and its
+later resource read:
+
+```http
+Authorization: Bearer <long-random-token>
+```
+
+The server hashes this token and uses the hash only as an in-memory lookup key.
+The original token is not stored or logged, and it is not validated as an
+identity credential. This allows the prepared selection to survive a client
+opening different MCP transport sessions for tool calls and resource reads.
+
+Current-config and blame selections are separate, so both resources can refer
+to different devices for the same Bearer token. Resource reads fetch the current
 configuration and all required historical versions live from Oxidized. No
 configuration, version, or blame result is cached or written to a database.
 
@@ -77,17 +88,15 @@ The MCP server listens on port 8000 (Streamable HTTP transport).
 
 ## MCP Client Configuration
 
-Add to your MCP client (e.g. Claude Desktop `mcp.json`):
+Configure the client to send a stable Bearer token on every MCP request:
 
-```json
-{
-  "mcpServers": {
-    "oxidized": {
-      "url": "http://localhost:8000/mcp"
-    }
-  }
-}
+```http
+Authorization: Bearer <long-random-token>
 ```
+
+The token is used only to associate `prepare_config` and `prepare_blame` calls
+with subsequent resource reads. Treat it as a secret because a caller using the
+same token can access and overwrite that token's prepared selections.
 
 ## Example Prompts
 
